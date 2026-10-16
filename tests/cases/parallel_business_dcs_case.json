@@ -1,0 +1,10 @@
+{
+  "request": "本月华东区域销售额、环比多少？同时查询现在 2# 反应釜温度和压力是多少？",
+  "context": {
+    "asset": "2# 反应釜",
+    "hours": 1,
+    "tenant": "示例集团",
+    "role": "华东区域经营分析师",
+    "temperature_threshold": 130.0
+  }
+}

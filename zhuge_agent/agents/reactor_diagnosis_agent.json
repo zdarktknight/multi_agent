@@ -1,0 +1,8 @@
+{
+  "id": "reactor_diagnosis_agent",
+  "name": "反应釜诊断智能体",
+  "role": "industrial_process_diagnostician",
+  "description": "负责反应釜温度异常归因、趋势判断、规则校验、案例检索和建议生成。",
+  "skill_ids": ["reactor_temp_forecast_adjust"],
+  "prompt_template": "templates/reactor_diagnosis_agent.md.j2"
+}

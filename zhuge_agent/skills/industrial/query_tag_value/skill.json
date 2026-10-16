@@ -1,0 +1,85 @@
+{
+  "id": "query_tag_value",
+  "name": "DCS 位号查询",
+  "description": "查询工业装置当前或最近时刻的温度、压力、流量、液位等 DCS 位号数值。",
+  "mode": "问数",
+  "result_type": "tag_query",
+  "intent_examples": [
+    "现在 2# 反应釜温度是多少",
+    "当前反应釜压力是多少",
+    "查询 R-201 的温度、压力、冷却水流量",
+    "DCS 位号当前值"
+  ],
+  "composer_template": "数值清单 + 时间 + 数据来源 + 数据质量",
+  "steps": [
+    {
+      "id": "A",
+      "name": "Router",
+      "kind": "llm",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "intent",
+      "no_llm": false
+    },
+    {
+      "id": "B",
+      "name": "Context Resolver",
+      "kind": "data",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "context",
+      "no_llm": true
+    },
+    {
+      "id": "D1",
+      "name": "Executor / DCS Current Values",
+      "kind": "data",
+      "tool_id": "dcs.current_values",
+      "input_keys": [
+        "context"
+      ],
+      "output_key": "current_values",
+      "no_llm": true
+    },
+    {
+      "id": "F",
+      "name": "Verifier",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "current_values"
+      ],
+      "output_key": "verification",
+      "no_llm": true
+    },
+    {
+      "id": "G",
+      "name": "Composer",
+      "kind": "composer",
+      "tool_id": null,
+      "input_keys": [
+        "current_values",
+        "verification"
+      ],
+      "output_key": "answer",
+      "no_llm": false
+    },
+    {
+      "id": "H",
+      "name": "Post-check",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "answer"
+      ],
+      "output_key": "post_check",
+      "no_llm": true
+    }
+  ],
+  "visibility": "public",
+  "allowed_agents": []
+}

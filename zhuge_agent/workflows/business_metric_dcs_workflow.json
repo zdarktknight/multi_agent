@@ -1,0 +1,42 @@
+{
+  "id": "business_metric_dcs_workflow",
+  "name": "经营指标 + DCS 查数复合工作流",
+  "description": "并行执行经营指标分析和工业 DCS 当前值查询，经过人审检查点后汇总结果。",
+  "trigger_examples": [
+    "本月华东区域销售额、环比多少？同时查询现在 2# 反应釜温度和压力是多少？",
+    "经营指标分析后，再查一下当前反应釜温度压力"
+  ],
+  "nodes": [
+    {
+      "id": "business_metrics",
+      "type": "agent",
+      "name": "经营指标分析节点",
+      "agent_id": "business_metric_agent"
+    },
+    {
+      "id": "dcs_values",
+      "type": "agent",
+      "name": "DCS 当前值节点",
+      "agent_id": "dcs_query_agent"
+    },
+    {
+      "id": "human_review",
+      "type": "human_review",
+      "name": "人审检查点",
+      "config": {
+        "mode": "auto_approve",
+        "review_focus": ["权限口径", "关键数字来源", "动作边界"]
+      }
+    },
+    {
+      "id": "final_join",
+      "type": "join",
+      "name": "汇总输出节点"
+    }
+  ],
+  "edges": [
+    {"from": "business_metrics", "to": "human_review"},
+    {"from": "dcs_values", "to": "human_review"},
+    {"from": "human_review", "to": "final_join", "condition": "passed"}
+  ]
+}

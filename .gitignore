@@ -1,0 +1,16 @@
+# 本地 LLM 配置可能包含真实密钥，不纳入版本控制。
+/config.ini
+/素材/
+/logs/
+.aws/
+.codex/
+.agents/
+.env
+.env.*
+.pytest_cache/
+.mypy_cache/
+dist/
+build/
+*.egg-info/
+__pycache__/
+*.py[cod]

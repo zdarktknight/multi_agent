@@ -1,0 +1,137 @@
+{
+  "id": "reactor_temp_forecast_adjust",
+  "name": "反应釜温度偏高归因与调整建议",
+  "description": "对反应釜温度偏高、超阈值或持续上升问题做归因诊断，并生成调整建议和证据链。",
+  "mode": "问答 / 推演",
+  "result_type": "diagnosis",
+  "intent_examples": [
+    "反应釜温度偏高",
+    "温度超阈值",
+    "帮我看看反应釜温度为什么上升",
+    "温度趋势预测和调整建议"
+  ],
+  "composer_template": "结论 + 关键指标 + 建议动作 + 证据链",
+  "steps": [
+    {
+      "id": "A",
+      "name": "Router",
+      "kind": "llm",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "intent",
+      "no_llm": false
+    },
+    {
+      "id": "B",
+      "name": "Context Resolver",
+      "kind": "data",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "context",
+      "no_llm": true
+    },
+    {
+      "id": "C",
+      "name": "Planner",
+      "kind": "llm",
+      "tool_id": null,
+      "input_keys": [
+        "intent",
+        "context"
+      ],
+      "output_key": "plan",
+      "no_llm": false
+    },
+    {
+      "id": "D1",
+      "name": "Executor / DCS",
+      "kind": "data",
+      "tool_id": "dcs.history",
+      "input_keys": [
+        "context"
+      ],
+      "output_key": "dcs_data",
+      "no_llm": true
+    },
+    {
+      "id": "D2",
+      "name": "Executor / Forecast Model",
+      "kind": "model",
+      "tool_id": "model.temp_forecast",
+      "input_keys": [
+        "dcs_data"
+      ],
+      "output_key": "forecast",
+      "no_llm": true
+    },
+    {
+      "id": "D3",
+      "name": "Executor / Rule Engine",
+      "kind": "rule",
+      "tool_id": "rule.reactor_temp",
+      "input_keys": [
+        "dcs_data",
+        "forecast"
+      ],
+      "output_key": "rule_check",
+      "no_llm": true
+    },
+    {
+      "id": "D4",
+      "name": "Executor / Knowledge Search",
+      "kind": "knowledge",
+      "tool_id": "knowledge.case_search",
+      "input_keys": [
+        "context",
+        "rule_check"
+      ],
+      "output_key": "case_evidence",
+      "no_llm": true
+    },
+    {
+      "id": "F",
+      "name": "Verifier",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "dcs_data",
+        "forecast",
+        "rule_check",
+        "case_evidence"
+      ],
+      "output_key": "verification",
+      "no_llm": true
+    },
+    {
+      "id": "G",
+      "name": "Composer",
+      "kind": "composer",
+      "tool_id": null,
+      "input_keys": [
+        "forecast",
+        "rule_check",
+        "case_evidence",
+        "verification"
+      ],
+      "output_key": "answer",
+      "no_llm": false
+    },
+    {
+      "id": "H",
+      "name": "Post-check",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "answer"
+      ],
+      "output_key": "post_check",
+      "no_llm": true
+    }
+  ],
+  "visibility": "private",
+  "allowed_agents": []
+}

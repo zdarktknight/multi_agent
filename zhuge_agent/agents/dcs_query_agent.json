@@ -1,0 +1,8 @@
+{
+  "id": "dcs_query_agent",
+  "name": "DCS 查数智能体",
+  "role": "industrial_data_reader",
+  "description": "负责工业位号当前值查询，只读取数据，不做趋势预测和操作建议。",
+  "skill_ids": [],
+  "prompt_template": "templates/dcs_query_agent.md.j2"
+}

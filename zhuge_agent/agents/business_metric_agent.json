@@ -1,0 +1,8 @@
+{
+  "id": "business_metric_agent",
+  "name": "经营指标分析智能体",
+  "role": "business_metric_analyst",
+  "description": "负责企业经营指标语义解析、口径校验、查询计划、数仓计算、可视化和洞察组织。",
+  "skill_ids": ["business_metric_analysis"],
+  "prompt_template": "templates/business_metric_agent.md.j2"
+}

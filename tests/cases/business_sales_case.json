@@ -1,0 +1,65 @@
+{
+  "request": "本月华东区域销售额、环比多少，按城市排序",
+  "context": {
+    "tenant": "示例集团",
+    "role": "华东区域经营分析师",
+    "hours": 1,
+    "asset": "经营指标"
+  },
+  "allowed_regions": ["华东"],
+  "semantic_parse": {
+    "metric": {
+      "id": "sales_amount",
+      "name": "销售额",
+      "definition": "已审核订单的不含税销售金额汇总",
+      "formula": "sum(net_sales_amount)",
+      "currency": "CNY"
+    },
+    "time": {
+      "grain": "month",
+      "current": "2026-10",
+      "compare": "2026-09"
+    },
+    "filters": {
+      "region": "华东"
+    },
+    "dimensions": ["city"],
+    "sort": {
+      "field": "sales_amount",
+      "order": "desc"
+    }
+  },
+  "query_plan": {
+    "dialect": "analytics-json-plan",
+    "source": "dw.fact_sales_order",
+    "metric_id": "sales_amount",
+    "select": [
+      {"expr": "city", "alias": "city"},
+      {"expr": "sum(net_sales_amount)", "alias": "sales_amount"},
+      {"expr": "mom(sum(net_sales_amount))", "alias": "mom_rate"}
+    ],
+    "where": [
+      {"field": "region", "op": "=", "value": "华东"},
+      {"field": "biz_month", "op": "in", "value": ["2026-10", "2026-09"]},
+      {"field": "order_status", "op": "=", "value": "approved"}
+    ],
+    "group_by": ["city"],
+    "order_by": [
+      {"field": "sales_amount", "order": "desc"}
+    ]
+  },
+  "warehouse_result": {
+    "currency": "CNY",
+    "rows": [
+      {"city": "上海", "sales_amount": 12860000, "last_month_sales_amount": 11500000, "mom_rate": 0.1183},
+      {"city": "杭州", "sales_amount": 9360000, "last_month_sales_amount": 8850000, "mom_rate": 0.0576},
+      {"city": "南京", "sales_amount": 8120000, "last_month_sales_amount": 9020000, "mom_rate": -0.0998},
+      {"city": "苏州", "sales_amount": 6980000, "last_month_sales_amount": 6410000, "mom_rate": 0.0889}
+    ],
+    "totals": {
+      "sales_amount": 37320000,
+      "last_month_sales_amount": 35780000,
+      "mom_rate": 0.043
+    }
+  }
+}

@@ -1,0 +1,32 @@
+[tool.pylint.main]
+py-version = "3.10"
+ignore = [
+  "draft",
+  "__pycache__"
+]
+recursive = true
+persistent = false
+
+[tool.pylint.messages_control]
+disable = [
+  "missing-module-docstring",
+  "missing-class-docstring",
+  "missing-function-docstring",
+  "too-few-public-methods",
+  "too-many-instance-attributes",
+  "too-many-locals",
+  "too-many-branches",
+  "too-many-statements",
+  "too-many-return-statements",
+  "too-many-lines",
+  "duplicate-code"
+]
+
+[tool.pylint.format]
+max-line-length = 120
+
+[tool.pylint.design]
+max-args = 8
+
+[tool.pylint.reports]
+score = true

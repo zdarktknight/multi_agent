@@ -1,0 +1,44 @@
+{
+  "request": "2# 反应釜最近 3 天温度一直偏高，帮我看看是什么原因，应该怎么调？",
+  "context": {
+    "tenant": "中粮（太仓）",
+    "role": "业务用户",
+    "asset": "2# 反应釜",
+    "hours": 72,
+    "temperature_threshold": 130.0
+  },
+  "dcs_data": {
+    "asset": "2# 反应釜",
+    "window_hours": 72,
+    "quality": {
+      "complete_rate": 0.997,
+      "sample_interval": "1 min"
+    },
+    "points": [
+      {"hour": 0, "reactor_temp": 128.1, "cooling_flow": 100.0, "feed_temp": 41.8, "agitator_current": 42.0},
+      {"hour": 8, "reactor_temp": 128.2, "cooling_flow": 100.0, "feed_temp": 41.8, "agitator_current": 42.2},
+      {"hour": 16, "reactor_temp": 128.3, "cooling_flow": 100.0, "feed_temp": 41.9, "agitator_current": 42.1},
+      {"hour": 20, "reactor_temp": 128.4, "cooling_flow": 100.0, "feed_temp": 41.9, "agitator_current": 42.1},
+      {"hour": 22, "reactor_temp": 128.5, "cooling_flow": 100.0, "feed_temp": 42.0, "agitator_current": 42.2},
+      {"hour": 24, "reactor_temp": 128.8, "cooling_flow": 100.0, "feed_temp": 42.0, "agitator_current": 42.3},
+      {"hour": 32, "reactor_temp": 129.2, "cooling_flow": 82.0, "feed_temp": 42.1, "agitator_current": 42.2},
+      {"hour": 40, "reactor_temp": 129.7, "cooling_flow": 82.0, "feed_temp": 42.2, "agitator_current": 42.1},
+      {"hour": 48, "reactor_temp": 130.1, "cooling_flow": 82.0, "feed_temp": 42.4, "agitator_current": 42.2},
+      {"hour": 56, "reactor_temp": 130.5, "cooling_flow": 82.0, "feed_temp": 42.5, "agitator_current": 42.3},
+      {"hour": 64, "reactor_temp": 130.8, "cooling_flow": 82.0, "feed_temp": 42.5, "agitator_current": 42.1},
+      {"hour": 71, "reactor_temp": 130.9, "cooling_flow": 82.0, "feed_temp": 42.5, "agitator_current": 42.0}
+    ]
+  },
+  "knowledge_hits": [
+    {
+      "case_id": "CASE-2025-11-014",
+      "similarity": 0.86,
+      "summary": "冷却水管结垢导致夹套换热能力下降，表现为釜温缓慢爬升。"
+    },
+    {
+      "case_id": "CASE-2026-03-008",
+      "similarity": 0.71,
+      "summary": "过滤器堵塞导致冷却水流量不足，清洗后温度恢复。"
+    }
+  ]
+}

@@ -1,0 +1,176 @@
+{
+  "id": "business_metric_analysis",
+  "name": "企业指标语义分析",
+  "description": "识别业务指标、时间、筛选条件和排序要求，校验指标口径与权限后查询数仓，并返回表格、图表和洞察。",
+  "mode": "经营分析",
+  "result_type": "business_metric_analysis",
+  "intent_examples": [
+    "本月华东区域销售额、环比多少，按城市排序",
+    "按城市排序销售额",
+    "本月销售额环比",
+    "华东区域销售额",
+    "经营指标分析"
+  ],
+  "composer_template": "指标口径 + 总数环比 + 城市排序表 + 可视化 + 洞察",
+  "steps": [
+    {
+      "id": "A",
+      "name": "Router",
+      "kind": "llm",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "intent",
+      "no_llm": false
+    },
+    {
+      "id": "B",
+      "name": "Context Resolver",
+      "kind": "data",
+      "tool_id": null,
+      "input_keys": [
+        "request"
+      ],
+      "output_key": "context",
+      "no_llm": true
+    },
+    {
+      "id": "C",
+      "name": "Planner",
+      "kind": "llm",
+      "tool_id": null,
+      "input_keys": [
+        "intent",
+        "context"
+      ],
+      "output_key": "plan",
+      "no_llm": false
+    },
+    {
+      "id": "D1",
+      "name": "Semantic Parser / Metric Catalog",
+      "kind": "semantic",
+      "tool_id": "semantic.metric_resolver",
+      "input_keys": [
+        "context"
+      ],
+      "output_key": "semantic_parse",
+      "no_llm": false
+    },
+    {
+      "id": "D2",
+      "name": "Query Plan Builder",
+      "kind": "query",
+      "tool_id": "query.plan_builder",
+      "input_keys": [
+        "semantic_parse"
+      ],
+      "output_key": "query_plan",
+      "no_llm": true
+    },
+    {
+      "id": "D3",
+      "name": "Policy / Metric Guard",
+      "kind": "rule",
+      "tool_id": "policy.query_guard",
+      "input_keys": [
+        "context",
+        "semantic_parse",
+        "query_plan"
+      ],
+      "output_key": "policy_check",
+      "no_llm": true
+    },
+    {
+      "id": "D4",
+      "name": "Warehouse Execution",
+      "kind": "warehouse",
+      "tool_id": "warehouse.sales_query",
+      "input_keys": [
+        "query_plan",
+        "policy_check"
+      ],
+      "output_key": "warehouse_result",
+      "no_llm": true
+    },
+    {
+      "id": "D5",
+      "name": "Visualization Builder",
+      "kind": "visualization",
+      "tool_id": "viz.sales_chart",
+      "input_keys": [
+        "warehouse_result"
+      ],
+      "output_key": "visualization",
+      "no_llm": true
+    },
+    {
+      "id": "D6",
+      "name": "Insight Builder",
+      "kind": "model",
+      "tool_id": "insight.sales_mom",
+      "input_keys": [
+        "warehouse_result"
+      ],
+      "output_key": "business_insights",
+      "no_llm": true
+    },
+    {
+      "id": "E",
+      "name": "Evidence Builder",
+      "kind": "knowledge",
+      "tool_id": null,
+      "input_keys": [
+        "semantic_parse",
+        "query_plan",
+        "policy_check",
+        "warehouse_result"
+      ],
+      "output_key": "evidence",
+      "no_llm": true
+    },
+    {
+      "id": "F",
+      "name": "Verifier",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "semantic_parse",
+        "query_plan",
+        "policy_check",
+        "warehouse_result",
+        "visualization"
+      ],
+      "output_key": "verification",
+      "no_llm": true
+    },
+    {
+      "id": "G",
+      "name": "Composer",
+      "kind": "composer",
+      "tool_id": null,
+      "input_keys": [
+        "warehouse_result",
+        "visualization",
+        "business_insights",
+        "verification"
+      ],
+      "output_key": "answer",
+      "no_llm": false
+    },
+    {
+      "id": "H",
+      "name": "Post-check",
+      "kind": "verifier",
+      "tool_id": null,
+      "input_keys": [
+        "answer"
+      ],
+      "output_key": "post_check",
+      "no_llm": true
+    }
+  ],
+  "visibility": "private",
+  "allowed_agents": []
+}

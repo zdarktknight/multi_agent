@@ -1,0 +1,37 @@
+{
+  "request": "现在 2# 反应釜的温度、压力和冷却水流量分别是多少？",
+  "context": {
+    "tenant": "中粮（太仓）",
+    "role": "业务用户",
+    "asset": "2# 反应釜",
+    "hours": 1
+  },
+  "current_values": {
+    "asset": "2# 反应釜",
+    "timestamp": "2026-10-12 10:30:00",
+    "source": "DCS historian",
+    "values": [
+      {
+        "name": "温度",
+        "tag": "TI-201A",
+        "value": 130.9,
+        "unit": "℃",
+        "quality": "good"
+      },
+      {
+        "name": "压力",
+        "tag": "PI-201",
+        "value": 0.42,
+        "unit": "MPa",
+        "quality": "good"
+      },
+      {
+        "name": "冷却水流量",
+        "tag": "FI-203",
+        "value": 82.0,
+        "unit": "m3/h",
+        "quality": "good"
+      }
+    ]
+  }
+}
