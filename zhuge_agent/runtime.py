@@ -78,16 +78,7 @@ class MasterAgent:
         本步骤只选择编排方式，不选择具体 Skill，也不计算业务或工业数值；串行、有依赖或需要人审
         的任务应优先选择已配置的 graph workflow。
         """
-        agents = [
-            {
-                "agent_id": agent.id,
-                "name": agent.name,
-                "role": agent.role,
-                "description": agent.description,
-                "private_skill_ids": list(agent.skill_ids),
-            }
-            for agent in agent_registry.all()
-        ]
+        agents = self._agent_payloads(agent_registry)
         workflows = [
             {
                 "workflow_id": workflow.id,
@@ -98,6 +89,15 @@ class MasterAgent:
             }
             for workflow in workflow_registry.all()
         ]
+        schema_hint = {
+            "execution_mode": "direct|single|parallel|workflow",
+            "agent_ids": ["string"],
+            "workflow_id": "string",
+            "intent": "string",
+            "confidence": 0.0,
+            "reason": "string",
+            "direct_answer": "string",
+        }
         response = self.llm.chat_json(
             system=(
                 "You are MasterAgent in Zhuge AI. Decide the execution mode for the user's request. "
@@ -106,7 +106,8 @@ class MasterAgent:
                 "specialist sub-agents can work at the same time. Use workflow when the task has serial "
                 "dependencies, requires a configured pipeline, needs human review, or matches an available "
                 "graph workflow. Do not select concrete Skills and do not calculate business or industrial "
-                "numbers. Return JSON only."
+                "numbers. If no available sub-agent or workflow can safely handle the request, use direct "
+                "and explain the current capability boundary. Return JSON only."
             ),
             user=_json_dumps(
                 {
@@ -115,17 +116,25 @@ class MasterAgent:
                     "available_workflows": workflows,
                 }
             ),
-            schema_hint={
-                "execution_mode": "direct|single|parallel|workflow",
-                "agent_ids": ["string"],
-                "workflow_id": "string",
-                "intent": "string",
-                "confidence": 0.0,
-                "reason": "string",
-                "direct_answer": "string",
-            },
+            schema_hint=schema_hint,
         )
-        plan = self._normalize_execution_plan(response, request, agent_registry, workflow_registry)
+        invalid_targets = self._invalid_execution_targets(response, agent_registry, workflow_registry)
+        if invalid_targets:
+            response = self._retry_execution_plan(
+                request, agent_registry, workflow_registry, response, invalid_targets, schema_hint
+            )
+            invalid_targets = self._invalid_execution_targets(response, agent_registry, workflow_registry)
+            if invalid_targets:
+                plan = self._illegal_execution_plan(response, agent_registry, invalid_targets)
+                return plan, TraceEvent(
+                    step="A0",
+                    actor=f"{self.name} / Execution Planner",
+                    status="done",
+                    message="LLM 返回非法编排目标，重试后仍未修正，由 MasterAgent 返回能力清单。",
+                    used_llm=True,
+                    metadata=plan,
+                )
+        plan = self._normalize_execution_plan(response, agent_registry, workflow_registry)
         return plan, TraceEvent(
             step="A0",
             actor=f"{self.name} / Execution Planner",
@@ -140,46 +149,33 @@ class MasterAgent:
         """调用 LLM 判断直接回答或选择子智能体，返回规范化意图和 A1 路由记录。
 
         普通寒暄或不需要业务工具的问题直接由 MasterAgent 回答；需要专业能力时才委派子智能体。
-        LLM 返回的 ID 未注册且不是直接回答时改用 registry 的文本匹配路由。
+        LLM 返回未注册 ID 时会重试一次；仍非法时返回能力清单，不做词匹配强派发。
         """
-        agents = [
-            {
-                "agent_id": agent.id,
-                "name": agent.name,
-                "role": agent.role,
-                "description": agent.description,
-                "private_skill_ids": list(agent.skill_ids),
-            }
-            for agent in registry.all()
-        ]
+        agents = self._agent_payloads(registry)
+        schema_hint = {
+            "route_type": "direct|delegate",
+            "agent_id": "string",
+            "intent": "string",
+            "confidence": 0.0,
+            "reason": "string",
+            "direct_answer": "string",
+        }
         intent = self.llm.chat_json(
             system=(
                 "You are MasterAgent in Zhuge AI. Receive the user's general question. If the request is "
                 "small talk, a greeting, a capability question, or a general answer that does not require "
                 "business metrics, DCS data, diagnosis, tools, evidence, or a specialist workflow, set "
                 "route_type to 'direct', leave agent_id empty, and provide direct_answer. Only select a "
-                "specialist sub-agent when the request needs that specialist workflow. Do not select a "
-                "concrete Skill and do not calculate business or industrial numbers. Return JSON only."
+                "specialist sub-agent when the request is covered by one of available_agents. If no "
+                "available sub-agent can safely handle the request, set route_type to 'direct' and explain "
+                "the current capability boundary. Do not select a concrete Skill and do not calculate "
+                "business or industrial numbers. Return JSON only."
             ),
             user=_json_dumps({"request": request, "available_agents": agents}),
-            schema_hint={
-                "route_type": "direct|delegate",
-                "agent_id": "string",
-                "intent": "string",
-                "confidence": 0.0,
-                "reason": "string",
-                "direct_answer": "string",
-            },
+            schema_hint=schema_hint,
         )
         if intent.get("route_type") == "direct" or (not intent.get("agent_id") and intent.get("direct_answer")):
-            normalized = {
-                "agent_id": None,
-                "intent": intent.get("intent") or "通用问答",
-                "confidence": float(intent.get("confidence", 0.0)),
-                "reason": intent.get("reason", ""),
-                "route_type": "direct",
-                "direct_answer": intent.get("direct_answer") or "你好，我在。有什么想一起看看的吗？",
-            }
+            normalized = self._direct_intent(intent, registry, default_intent="通用问答")
             return None, normalized, TraceEvent(
                 step="A1",
                 actor=f"{self.name} / Router",
@@ -189,7 +185,43 @@ class MasterAgent:
                 metadata=normalized,
             )
         agent_id = intent.get("agent_id")
-        agent = registry.get(agent_id) if registry.has(agent_id) else registry.route(request)
+        if not registry.has(agent_id):
+            if agent_id:
+                intent = self._retry_single_route(request, registry, intent, str(agent_id), schema_hint)
+                if intent.get("route_type") == "direct" or (
+                    not intent.get("agent_id") and intent.get("direct_answer")
+                ):
+                    normalized = self._direct_intent(intent, registry, default_intent="通用问答")
+                    return None, normalized, TraceEvent(
+                        step="A1",
+                        actor=f"{self.name} / Router",
+                        status="done",
+                        message=f"识别意图为「{normalized['intent']}」，由 MasterAgent 直接回答。",
+                        used_llm=True,
+                        metadata=normalized,
+                    )
+                agent_id = intent.get("agent_id")
+            if agent_id and not registry.has(agent_id):
+                normalized = self._illegal_intent(intent, registry, {"invalid_agent_id": agent_id})
+                return None, normalized, TraceEvent(
+                    step="A1",
+                    actor=f"{self.name} / Router",
+                    status="done",
+                    message="LLM 返回非法子智能体 ID，重试后仍未修正，由 MasterAgent 返回能力清单。",
+                    used_llm=True,
+                    metadata=normalized,
+                )
+            if not agent_id:
+                normalized = self._unsupported_intent(intent, registry)
+                return None, normalized, TraceEvent(
+                    step="A1",
+                    actor=f"{self.name} / Router",
+                    status="done",
+                    message="当前子智能体能力不足以承接该问题，由 MasterAgent 返回能力边界。",
+                    used_llm=True,
+                    metadata=normalized,
+                )
+        agent = registry.get(str(agent_id))
         intent = {
             "agent_id": agent.id,
             "intent": intent.get("intent") or agent.name,
@@ -210,48 +242,36 @@ class MasterAgent:
     def route_many(self, request: str, registry: AgentRegistry) -> tuple[list[AgentSpec], dict[str, Any], TraceEvent]:
         """让 LLM 为复合问题选择多个子智能体，或声明无需委派并由 MasterAgent 直接回答。
 
-        过滤无效及重复 ID；没有有效候选时使用备用路由选择一个智能体，实际并发由 Runtime 执行。
+        非法 ID 会触发一次重试；无可承接能力时直接返回能力边界，不强制并行派发。
         """
-        agents = [
-            {
-                "agent_id": agent.id,
-                "name": agent.name,
-                "role": agent.role,
-                "description": agent.description,
-                "private_skill_ids": list(agent.skill_ids),
-            }
-            for agent in registry.all()
-        ]
+        agents = self._agent_payloads(registry)
+        schema_hint = {
+            "route_type": "direct|delegate",
+            "agent_ids": ["string"],
+            "intent": "string",
+            "confidence": 0.0,
+            "reason": "string",
+            "direct_answer": "string",
+        }
         response = self.llm.chat_json(
             system=(
                 "You are MasterAgent in Zhuge AI. Receive the user's general question, decompose it into "
                 "independent specialist sub-agent delegations when useful, and return every sub-agent that "
                 "should work in parallel. If the request is small talk, a greeting, or a general answer "
                 "that does not need specialist tools, set route_type to 'direct', return no agent_ids, and "
-                "provide direct_answer. Do not select concrete Skills and do not calculate business or "
-                "industrial numbers. Return JSON only."
+                "provide direct_answer. Only return agent_ids from available_agents. If no available "
+                "sub-agent can safely handle the request, return direct and explain the current capability "
+                "boundary. Do not select concrete Skills and do not calculate business or industrial "
+                "numbers. Return JSON only."
             ),
             user=_json_dumps({"request": request, "available_agents": agents}),
-            schema_hint={
-                "route_type": "direct|delegate",
-                "agent_ids": ["string"],
-                "intent": "string",
-                "confidence": 0.0,
-                "reason": "string",
-                "direct_answer": "string",
-            },
+            schema_hint=schema_hint,
         )
         if response.get("route_type") == "direct" or (
             not response.get("agent_ids") and response.get("direct_answer")
         ):
-            intent = {
-                "agent_ids": [],
-                "intent": response.get("intent") or "通用问答",
-                "confidence": float(response.get("confidence", 0.0)),
-                "reason": response.get("reason", ""),
-                "route_type": "direct",
-                "direct_answer": response.get("direct_answer") or "你好，我在。有什么想一起看看的吗？",
-            }
+            intent = self._direct_intent(response, registry, default_intent="通用问答")
+            intent["agent_ids"] = []
             return [], intent, TraceEvent(
                 step="A1",
                 actor=f"{self.name} / Parallel Router",
@@ -260,9 +280,45 @@ class MasterAgent:
                 used_llm=True,
                 metadata=intent,
             )
-        selected = self._selected_agents(response.get("agent_ids", []), registry)
+        selected, invalid_ids = self._select_agents_with_invalid(response.get("agent_ids", []), registry)
+        if invalid_ids:
+            response = self._retry_many_route(request, registry, response, invalid_ids, schema_hint)
+            if response.get("route_type") == "direct" or (
+                not response.get("agent_ids") and response.get("direct_answer")
+            ):
+                intent = self._direct_intent(response, registry, default_intent="通用问答")
+                intent["agent_ids"] = []
+                return [], intent, TraceEvent(
+                    step="A1",
+                    actor=f"{self.name} / Parallel Router",
+                    status="done",
+                    message=f"识别意图为「{intent['intent']}」，由 MasterAgent 直接回答。",
+                    used_llm=True,
+                    metadata=intent,
+                )
+            selected, invalid_ids = self._select_agents_with_invalid(response.get("agent_ids", []), registry)
+            if invalid_ids:
+                intent = self._illegal_intent(response, registry, {"invalid_agent_ids": invalid_ids})
+                intent["agent_ids"] = []
+                return [], intent, TraceEvent(
+                    step="A1",
+                    actor=f"{self.name} / Parallel Router",
+                    status="done",
+                    message="LLM 返回非法子智能体 ID，重试后仍未修正，由 MasterAgent 返回能力清单。",
+                    used_llm=True,
+                    metadata=intent,
+                )
         if not selected:
-            selected = [registry.route(request)]
+            intent = self._unsupported_intent(response, registry)
+            intent["agent_ids"] = []
+            return [], intent, TraceEvent(
+                step="A1",
+                actor=f"{self.name} / Parallel Router",
+                status="done",
+                message="当前子智能体能力不足以承接该问题，由 MasterAgent 返回能力边界。",
+                used_llm=True,
+                metadata=intent,
+            )
         intent = {
             "agent_ids": [agent.id for agent in selected],
             "intent": response.get("intent") or "并行智能体委派",
@@ -282,18 +338,29 @@ class MasterAgent:
 
     def _selected_agents(self, agent_ids: Any, registry: AgentRegistry) -> list[AgentSpec]:
         """按 LLM 列表顺序保留已注册且未重复的智能体，非列表输入返回空列表。"""
+        selected, _invalid_ids = self._select_agents_with_invalid(agent_ids, registry)
+        return selected
+
+    def _select_agents_with_invalid(
+        self,
+        agent_ids: Any,
+        registry: AgentRegistry,
+    ) -> tuple[list[AgentSpec], list[str]]:
+        """按 LLM 列表选择已注册智能体，并单独返回非空但未注册的非法 ID。"""
         selected = []
         seen = set()
+        invalid_ids = []
         for agent_id in agent_ids if isinstance(agent_ids, list) else []:
             if registry.has(agent_id) and agent_id not in seen:
                 selected.append(registry.get(agent_id))
                 seen.add(agent_id)
-        return selected
+            elif agent_id:
+                invalid_ids.append(str(agent_id))
+        return selected, invalid_ids
 
     def _normalize_execution_plan(
         self,
         response: dict[str, Any],
-        request: str,
         agent_registry: AgentRegistry,
         workflow_registry: WorkflowRegistry,
     ) -> dict[str, Any]:
@@ -302,18 +369,24 @@ class MasterAgent:
         selected_agents = self._selected_agents(response.get("agent_ids", []), agent_registry)
         workflow_id = str(response.get("workflow_id") or "").strip()
         if mode == "workflow" and not workflow_registry.has(workflow_id):
-            workflow_id = workflow_registry.route(request).id if workflow_registry.all() else ""
-            mode = "workflow" if workflow_id else "parallel"
+            workflow_id = ""
+            mode = "parallel" if len(selected_agents) > 1 else "single" if selected_agents else "direct"
         if mode not in {"direct", "single", "parallel", "workflow"}:
             mode = "parallel" if len(selected_agents) > 1 else "single" if selected_agents else "direct"
         if mode == "direct":
             selected_agents = []
         elif mode == "single":
-            selected_agents = selected_agents[:1] or [agent_registry.route(request)]
+            selected_agents = selected_agents[:1]
+            if not selected_agents:
+                mode = "direct"
         elif mode == "parallel":
-            selected_agents = selected_agents or [agent_registry.route(request)]
+            if not selected_agents:
+                mode = "direct"
             if len(selected_agents) == 1:
                 mode = "single"
+        direct_answer = response.get("direct_answer")
+        if mode == "direct" and not direct_answer:
+            direct_answer = self._capability_boundary_answer(agent_registry)
         return {
             "execution_mode": mode,
             "agent_ids": [agent.id for agent in selected_agents],
@@ -321,8 +394,220 @@ class MasterAgent:
             "intent": response.get("intent") or "自动编排",
             "confidence": float(response.get("confidence", 0.0)),
             "reason": response.get("reason", ""),
-            "direct_answer": response.get("direct_answer") or "你好，我在。有什么想一起看看的吗？",
+            "direct_answer": direct_answer or "你好，我在。有什么想一起看看的吗？",
         }
+
+    def _invalid_execution_targets(
+        self,
+        response: dict[str, Any],
+        agent_registry: AgentRegistry,
+        workflow_registry: WorkflowRegistry,
+    ) -> dict[str, Any]:
+        """识别 LLM 编排结果中的非法目标；空候选属于能力不足，不归为非法。"""
+        mode = str(response.get("execution_mode") or "").strip().lower()
+        invalid: dict[str, Any] = {}
+        if mode in {"single", "parallel"}:
+            _selected, invalid_ids = self._select_agents_with_invalid(response.get("agent_ids", []), agent_registry)
+            if invalid_ids:
+                invalid["invalid_agent_ids"] = invalid_ids
+        if mode == "workflow":
+            workflow_id = str(response.get("workflow_id") or "").strip()
+            if not workflow_registry.has(workflow_id):
+                invalid["invalid_workflow_id"] = workflow_id
+        return invalid
+
+    def _illegal_execution_plan(
+        self,
+        response: dict[str, Any],
+        registry: AgentRegistry,
+        invalid_targets: dict[str, Any],
+    ) -> dict[str, Any]:
+        """把重试后仍非法的编排结果转成直接回答计划，并保留非法目标元数据。"""
+        return {
+            "execution_mode": "direct",
+            "agent_ids": [],
+            "workflow_id": "",
+            "intent": response.get("intent") or "非法路由",
+            "confidence": float(response.get("confidence", 0.0)),
+            "reason": response.get("reason") or "LLM 返回了未注册的子智能体或工作流。",
+            "direct_answer": self._invalid_route_answer(registry),
+            "route_status": "invalid_route",
+            "invalid_targets": invalid_targets,
+        }
+
+    def _agent_payloads(self, registry: AgentRegistry) -> list[dict[str, Any]]:
+        """把注册表中的子智能体转换成 MasterAgent 路由提示词可消费的能力清单。"""
+        return [
+            {
+                "agent_id": agent.id,
+                "name": agent.name,
+                "role": agent.role,
+                "description": agent.description,
+                "private_skill_ids": list(agent.skill_ids),
+            }
+            for agent in registry.all()
+        ]
+
+    def _direct_intent(
+        self,
+        response: dict[str, Any],
+        registry: AgentRegistry,
+        *,
+        default_intent: str,
+    ) -> dict[str, Any]:
+        """规范化 MasterAgent 直接回答意图；没有回答文本时补充能力边界兜底。"""
+        route_status = "direct" if response.get("direct_answer") else "capability_gap"
+        return {
+            "agent_id": None,
+            "intent": response.get("intent") or default_intent,
+            "confidence": float(response.get("confidence", 0.0)),
+            "reason": response.get("reason", ""),
+            "route_type": "direct",
+            "route_status": route_status,
+            "direct_answer": response.get("direct_answer") or self._capability_boundary_answer(registry),
+        }
+
+    def _unsupported_intent(self, response: dict[str, Any], registry: AgentRegistry) -> dict[str, Any]:
+        """在没有子智能体可承接时返回能力不足意图，避免误触发业务链路。"""
+        return {
+            "agent_id": None,
+            "intent": response.get("intent") or "未覆盖问题",
+            "confidence": float(response.get("confidence", 0.0)),
+            "reason": response.get("reason") or "当前没有注册子智能体可以可靠承接该问题。",
+            "route_type": "direct",
+            "route_status": "capability_gap",
+            "direct_answer": self._capability_boundary_answer(registry),
+        }
+
+    def _illegal_intent(
+        self,
+        response: dict[str, Any],
+        registry: AgentRegistry,
+        invalid_targets: dict[str, Any],
+    ) -> dict[str, Any]:
+        """在 LLM 重试后仍返回非法路由目标时，返回可解释的非法路由兜底意图。"""
+        return {
+            "agent_id": None,
+            "intent": response.get("intent") or "非法路由",
+            "confidence": float(response.get("confidence", 0.0)),
+            "reason": response.get("reason") or "LLM 返回了未注册的子智能体或工作流。",
+            "route_type": "direct",
+            "route_status": "invalid_route",
+            "invalid_targets": invalid_targets,
+            "direct_answer": self._invalid_route_answer(registry),
+        }
+
+    def _capability_boundary_answer(self, registry: AgentRegistry) -> str:
+        """生成能力不足说明，列出当前已注册子智能体及其功能简介。"""
+        agent_lines = [f"- {agent.name}（{agent.id}）：{agent.description}" for agent in registry.all()]
+        capabilities = "\n".join(agent_lines) if agent_lines else "- 暂无已注册子智能体"
+        return (
+            "这个问题当前没有合适的子智能体可以可靠承接，属于现有子智能体能力不足，我先不强行调用业务链路。\n"
+            "当前可用的子智能体包括：\n"
+            f"{capabilities}\n"
+            "你可以把问题改写到上述能力范围内，或先补充需要接入的新子智能体/Skill。"
+        )
+
+    def _invalid_route_answer(self, registry: AgentRegistry) -> str:
+        """生成非法路由说明，说明已重试并列出合法子智能体清单。"""
+        agent_lines = [f"- {agent.name}（{agent.id}）：{agent.description}" for agent in registry.all()]
+        capabilities = "\n".join(agent_lines) if agent_lines else "- 暂无已注册子智能体"
+        return (
+            "主智能体路由时生成了未注册的子智能体或工作流 ID，已经重试一次但仍未修正。\n"
+            "为避免误调用业务链路，本次不继续执行子智能体。\n"
+            "当前可用的子智能体包括：\n"
+            f"{capabilities}\n"
+            "请使用上述 agent_id，或先补充新的子智能体/Workflow 配置。"
+        )
+
+    def _retry_execution_plan(  # pylint: disable=too-many-positional-arguments
+        self,
+        request: str,
+        agent_registry: AgentRegistry,
+        workflow_registry: WorkflowRegistry,
+        previous_response: dict[str, Any],
+        invalid_targets: dict[str, Any],
+        schema_hint: dict[str, Any],
+    ) -> dict[str, Any]:
+        """当自动编排返回非法 agent/workflow ID 时，让 LLM 基于合法清单重试一次。"""
+        return self.llm.chat_json(
+            system=(
+                "You are MasterAgent in Zhuge AI. Your previous execution plan selected invalid targets. "
+                "Retry once. You must use only agent_ids from available_agents and workflow_id from "
+                "available_workflows. If none can safely handle the request, return execution_mode direct "
+                "with a concise direct_answer. Return JSON only."
+            ),
+            user=_json_dumps(
+                {
+                    "request": request,
+                    "previous_response": previous_response,
+                    "invalid_targets": invalid_targets,
+                    "available_agents": self._agent_payloads(agent_registry),
+                    "available_workflows": [
+                        {
+                            "workflow_id": workflow.id,
+                            "name": workflow.name,
+                            "description": workflow.description,
+                            "trigger_examples": list(workflow.trigger_examples),
+                        }
+                        for workflow in workflow_registry.all()
+                    ],
+                }
+            ),
+            schema_hint=schema_hint,
+        )
+
+    def _retry_single_route(  # pylint: disable=too-many-positional-arguments
+        self,
+        request: str,
+        registry: AgentRegistry,
+        previous_response: dict[str, Any],
+        invalid_agent_id: str,
+        schema_hint: dict[str, Any],
+    ) -> dict[str, Any]:
+        """当单路由返回非法 agent_id 时，让 LLM 基于合法子智能体清单重试一次。"""
+        return self.llm.chat_json(
+            system=(
+                "You are MasterAgent in Zhuge AI. Your previous route selected an invalid agent_id. "
+                "Retry once. You must either choose exactly one agent_id from available_agents or return "
+                "route_type direct if no sub-agent can safely handle the request. Return JSON only."
+            ),
+            user=_json_dumps(
+                {
+                    "request": request,
+                    "previous_response": previous_response,
+                    "invalid_agent_id": invalid_agent_id,
+                    "available_agents": self._agent_payloads(registry),
+                }
+            ),
+            schema_hint=schema_hint,
+        )
+
+    def _retry_many_route(  # pylint: disable=too-many-positional-arguments
+        self,
+        request: str,
+        registry: AgentRegistry,
+        previous_response: dict[str, Any],
+        invalid_agent_ids: list[str],
+        schema_hint: dict[str, Any],
+    ) -> dict[str, Any]:
+        """当并行路由包含非法 agent_ids 时，让 LLM 基于合法子智能体清单重试一次。"""
+        return self.llm.chat_json(
+            system=(
+                "You are MasterAgent in Zhuge AI. Your previous parallel route included invalid agent_ids. "
+                "Retry once. Use only agent_ids from available_agents, or return route_type direct if no "
+                "sub-agent can safely handle the request. Return JSON only."
+            ),
+            user=_json_dumps(
+                {
+                    "request": request,
+                    "previous_response": previous_response,
+                    "invalid_agent_ids": invalid_agent_ids,
+                    "available_agents": self._agent_payloads(registry),
+                }
+            ),
+            schema_hint=schema_hint,
+        )
 
 
 class SubAgent:
@@ -1420,6 +1705,19 @@ class ZhugeAgentRuntime:
         """
         fallback = str(intent.get("direct_answer") or "你好，我在。有什么想一起看看的吗？")
         if token_callback is None:
+            return fallback
+        if intent.get("route_status") in {"capability_gap", "invalid_route"}:
+            for sequence, index in enumerate(range(0, len(fallback), 4), start=1):
+                # 能力边界和非法路由说明由 Runtime 确定生成，流式时只做本地切片，不再交给 LLM 改写。
+                token_callback(
+                    AnswerTokenEvent(
+                        request=request,
+                        agent_id="MasterAgent",
+                        agent_name="MasterAgent",
+                        delta=fallback[index:index + 4],
+                        sequence=sequence,
+                    )
+                )
             return fallback
         system = (
             "You are MasterAgent in Zhuge AI. Answer the user's general small-talk or general question "

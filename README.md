@@ -406,7 +406,14 @@ SubAgent / G Composer
 H Post-check
 ```
 
-其中 MasterAgent 接收用户的一般性问题，只负责选择子智能体；具体业务能力由子智能体执行。子智能体从公共 Skills 和自己的私有 Skills 中选择具体 Skill，并使用 `zhuge_agent/agents/templates/*.md.j2` 中的 prompt 模板执行规划和回答生成。
+其中 MasterAgent 接收用户的一般性问题，只负责选择子智能体；具体业务能力由子智能体执行。MasterAgent 每次路由时会从 `AgentRegistry` 读取当前已注册子智能体，并把 `agent_id`、名称、角色、功能描述和私有 Skill 列表作为能力清单交给 LLM 判断。子智能体从公共 Skills 和自己的私有 Skills 中选择具体 Skill，并使用 `zhuge_agent/agents/templates/*.md.j2` 中的 prompt 模板执行规划和回答生成。
+
+MasterAgent 的兜底策略是“宁可说明能力边界，也不误触发业务链路”，并区分两类情况：
+
+- `invalid_route`：LLM 返回了未注册的 `agent_id`、非法 `agent_ids` 或无效 `workflow_id`。Runtime 会把合法能力清单、上一次错误响应和非法目标重新发给 LLM 重试一次；如果重试后仍非法，返回 `skill_id=direct_answer`，说明路由非法并列出当前可用子智能体。
+- `capability_gap`：LLM 判断当前没有子智能体可以可靠承接用户诉求。Runtime 不再强行词匹配到某个业务 Agent，而是返回 `skill_id=direct_answer`，说明现有子智能体能力不足，并列出当前可用子智能体及功能简介。
+
+`AgentRegistry.route()` 保留为注册表的简单文本匹配能力，但主路由链路不会在无有效候选时强行把问题塞给某个子智能体。
 
 Runtime 提供以下入口：
 

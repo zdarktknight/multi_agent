@@ -316,14 +316,23 @@ class FixtureLLMClient:
             if any(word in request for word in ("多少", "当前", "现在", "查询", "位号", "压力", "温度")):
                 agent_ids.append("dcs_query_agent")
             if not agent_ids:
+                if self._is_general_chat(request):
+                    return {
+                        "execution_mode": "direct",
+                        "agent_ids": [],
+                        "workflow_id": "",
+                        "intent": "通用问答",
+                        "confidence": 0.95,
+                        "reason": "请求不需要业务子智能体或确定性工具。",
+                        "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                    }
                 return {
                     "execution_mode": "direct",
                     "agent_ids": [],
                     "workflow_id": "",
-                    "intent": "通用问答",
-                    "confidence": 0.95,
-                    "reason": "请求不需要业务子智能体或确定性工具。",
-                    "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                    "intent": "未覆盖问题",
+                    "confidence": 0.72,
+                    "reason": "当前注册子智能体不覆盖该诉求。",
                 }
             if len(agent_ids) > 1 and any(word in request for word in ("工作流", "流程", "审批", "人审")):
                 return {
@@ -353,13 +362,21 @@ class FixtureLLMClient:
             if any(word in request for word in ("多少", "当前", "现在", "查询", "位号", "压力", "温度")):
                 agent_ids.append("dcs_query_agent")
             if not agent_ids:
+                if self._is_general_chat(request):
+                    return {
+                        "route_type": "direct",
+                        "agent_ids": [],
+                        "intent": "通用问答",
+                        "confidence": 0.95,
+                        "reason": "请求不需要业务子智能体或确定性工具。",
+                        "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                    }
                 return {
                     "route_type": "direct",
                     "agent_ids": [],
-                    "intent": "通用问答",
-                    "confidence": 0.95,
-                    "reason": "请求不需要业务子智能体或确定性工具。",
-                    "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                    "intent": "未覆盖问题",
+                    "confidence": 0.72,
+                    "reason": "当前注册子智能体不覆盖该诉求。",
                 }
             return {
                 "route_type": "delegate",
@@ -395,13 +412,21 @@ class FixtureLLMClient:
                     "confidence": 0.9,
                     "reason": "问题是在询问当前或最近时刻的装置位号数值。",
                 }
+            if self._is_general_chat(request):
+                return {
+                    "route_type": "direct",
+                    "agent_id": None,
+                    "intent": "通用问答",
+                    "confidence": 0.95,
+                    "reason": "请求不需要业务子智能体或确定性工具。",
+                    "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                }
             return {
                 "route_type": "direct",
                 "agent_id": None,
-                "intent": "通用问答",
-                "confidence": 0.95,
-                "reason": "请求不需要业务子智能体或确定性工具。",
-                "direct_answer": "我很好，随时可以帮你查看诸葛 AI 的业务问题或一起排查系统流程。",
+                "intent": "未覆盖问题",
+                "confidence": 0.72,
+                "reason": "当前注册子智能体不覆盖该诉求。",
             }
         if "skill_id" in schema_hint:
             payload = parse_json_object(user)
@@ -507,6 +532,10 @@ class FixtureLLMClient:
         # fixture 不访问网络，用固定长度切片模拟 token 增量，保证测试可重复。
         for index in range(0, len(answer), 4):
             yield answer[index:index + 4]
+
+    def _is_general_chat(self, request: str) -> bool:
+        """识别离线 fixture 中的普通寒暄，避免把未知业务诉求误当成闲聊回答。"""
+        return any(word in request for word in ("你好", "你好吗", "您好", "在吗", "谢谢"))
 
 
 @log_call("path")

@@ -20,13 +20,105 @@ from zhuge_agent.schema import (
 from zhuge_agent.utils.prompt_templates import LazyPrompt
 
 
+class InvalidRoutingLLM(FixtureLLMClient):
+    """模拟真实 LLM 路由漂移：返回不存在的子智能体 ID，用于验证 MasterAgent 安全兜底。"""
+
+    def __init__(self) -> None:
+        """记录路由调用次数，便于断言非法目标会触发一次重试。"""
+        self.route_calls = 0
+
+    def chat_json(self, **kwargs):
+        """在 MasterAgent 路由阶段返回非法 agent，其余阶段复用 fixture 行为。"""
+        schema_hint = kwargs.get("schema_hint", {})
+        if "execution_mode" in schema_hint:
+            self.route_calls += 1
+            return {
+                "execution_mode": "single",
+                "agent_ids": ["unknown_agent"],
+                "workflow_id": "",
+                "intent": "未知专业问题",
+                "confidence": 0.42,
+                "reason": "模拟模型误选了未注册子智能体。",
+            }
+        if "agent_id" in schema_hint:
+            self.route_calls += 1
+            return {
+                "route_type": "delegate",
+                "agent_id": "unknown_agent",
+                "intent": "未知专业问题",
+                "confidence": 0.42,
+                "reason": "模拟模型误选了未注册子智能体。",
+            }
+        if "agent_ids" in schema_hint:
+            self.route_calls += 1
+            return {
+                "route_type": "delegate",
+                "agent_ids": ["unknown_agent"],
+                "intent": "未知专业问题",
+                "confidence": 0.42,
+                "reason": "模拟模型误选了未注册子智能体。",
+            }
+        return super().chat_json(**kwargs)
+
+
+class RecoveringRoutingLLM(FixtureLLMClient):
+    """模拟 LLM 首次生成非法路由，收到重试提示后修正为合法子智能体。"""
+
+    def __init__(self) -> None:
+        """记录路由调用次数，确认 Runtime 确实执行了纠偏重试。"""
+        self.route_calls = 0
+
+    def chat_json(self, **kwargs):
+        """首次路由返回非法 ID；携带 previous_response 的重试请求返回 DCS 智能体。"""
+        schema_hint = kwargs.get("schema_hint", {})
+        user = str(kwargs.get("user", ""))
+        is_retry = "previous_response" in user
+        if "execution_mode" in schema_hint:
+            self.route_calls += 1
+            if is_retry:
+                return {
+                    "execution_mode": "single",
+                    "agent_ids": ["dcs_query_agent"],
+                    "workflow_id": "",
+                    "intent": "工业位号查数",
+                    "confidence": 0.86,
+                    "reason": "重试后选择了已注册的 DCS 查数智能体。",
+                }
+            return {
+                "execution_mode": "single",
+                "agent_ids": ["missing_agent"],
+                "workflow_id": "",
+                "intent": "工业位号查数",
+                "confidence": 0.51,
+                "reason": "首次模拟非法子智能体 ID。",
+            }
+        if "agent_id" in schema_hint:
+            self.route_calls += 1
+            if is_retry:
+                return {
+                    "route_type": "delegate",
+                    "agent_id": "dcs_query_agent",
+                    "intent": "工业位号查数",
+                    "confidence": 0.86,
+                    "reason": "重试后选择了已注册的 DCS 查数智能体。",
+                }
+            return {
+                "route_type": "delegate",
+                "agent_id": "missing_agent",
+                "intent": "工业位号查数",
+                "confidence": 0.51,
+                "reason": "首次模拟非法子智能体 ID。",
+            }
+        return super().chat_json(**kwargs)
+
+
 CASE_PATH = Path(__file__).parent / "cases" / "reactor_temp_case.json"
 QUERY_CASE_PATH = Path(__file__).parent / "cases" / "query_tag_value_case.json"
 BUSINESS_CASE_PATH = Path(__file__).parent / "cases" / "business_sales_case.json"
 WORKFLOW_CASE_PATH = Path(__file__).parent / "cases" / "business_dcs_workflow_case.json"
 
 
-class ZhugeAgentRuntimeTest(unittest.TestCase):
+class ZhugeAgentRuntimeTest(unittest.TestCase):  # pylint: disable=too-many-public-methods
     def test_lazy_prompt_renders_only_when_consumed(self) -> None:
         """验证 LazyPrompt 初始化不渲染，首次消费后缓存结果，重复消费不会再次调用回调。"""
         calls = []
@@ -188,6 +280,89 @@ class ZhugeAgentRuntimeTest(unittest.TestCase):
         self.assertEqual(items[-1].skill_id, "direct_answer")
         streamed = "".join(item.delta for item in items if isinstance(item, AnswerTokenEvent))
         self.assertEqual(streamed, items[-1].answer)
+
+    def test_uncovered_request_reports_sub_agent_capability_gap(self) -> None:
+        """验证无子智能体承接的诉求被归类为能力不足，而不是普通寒暄或误路由。"""
+        runtime = ZhugeAgentRuntime(llm_client=FixtureLLMClient())
+
+        result = runtime.answer("帮我审一下这份合同风险")
+
+        self.assertEqual(result.agent_id, "MasterAgent")
+        self.assertEqual(result.skill_id, "direct_answer")
+        self.assertEqual(result.trace[0].metadata["route_status"], "capability_gap")
+        self.assertIn("能力不足", result.answer)
+        self.assertIn("当前可用的子智能体", result.answer)
+
+    def test_uncovered_request_streams_capability_gap_text(self) -> None:
+        """验证能力不足的流式输出使用 Runtime 兜底文案，不再被 LLM 改写成寒暄回答。"""
+        runtime = ZhugeAgentRuntime(llm_client=FixtureLLMClient())
+
+        items = list(runtime.iter_answer("帮我审一下这份合同风险"))
+        final_answer = items[-1].answer
+        streamed = "".join(item.delta for item in items if isinstance(item, AnswerTokenEvent))
+
+        self.assertEqual(streamed, final_answer)
+        self.assertIn("能力不足", final_answer)
+
+    def test_invalid_single_route_falls_back_to_master_capability_boundary(self) -> None:
+        """验证 LLM 重试后仍返回非法子智能体时，归类为非法路由并返回能力清单。"""
+        llm = InvalidRoutingLLM()
+        runtime = ZhugeAgentRuntime(llm_client=llm)
+
+        result = runtime.answer("帮我审一下这份合同风险")
+
+        self.assertEqual(result.agent_id, "MasterAgent")
+        self.assertEqual(result.skill_id, "direct_answer")
+        self.assertEqual([event.step for event in result.trace], ["A1"])
+        self.assertEqual(result.trace[0].metadata["route_status"], "invalid_route")
+        self.assertEqual(result.trace[0].metadata["invalid_targets"], {"invalid_agent_id": "unknown_agent"})
+        self.assertGreaterEqual(llm.route_calls, 2)
+        self.assertIn("已经重试一次", result.answer)
+        self.assertIn("当前可用的子智能体", result.answer)
+        self.assertIn("经营指标分析智能体", result.answer)
+        self.assertIn("DCS 查数智能体", result.answer)
+
+    def test_invalid_auto_plan_falls_back_without_sub_agent_execution(self) -> None:
+        """验证 auto 规划和后续单路由都非法时，不执行任何子智能体链路。"""
+        llm = InvalidRoutingLLM()
+        runtime = ZhugeAgentRuntime(llm_client=llm)
+        progress = []
+
+        result = runtime.answer_auto("帮我审一下这份合同风险", progress_callback=progress.append)
+
+        self.assertIsInstance(result, StructuredAnswer)
+        self.assertEqual(result.agent_id, "MasterAgent")
+        self.assertEqual(result.skill_id, "direct_answer")
+        self.assertEqual([event.step for event in progress], ["A1"])
+        self.assertEqual(progress[0].metadata["route_status"], "invalid_route")
+        self.assertGreaterEqual(llm.route_calls, 4)
+        self.assertIn("当前可用的子智能体", result.answer)
+
+    def test_invalid_single_route_retries_and_uses_corrected_agent(self) -> None:
+        """验证非法 agent_id 可被 LLM 重试修正，修正后继续执行合法子智能体链路。"""
+        case_data = json.loads(QUERY_CASE_PATH.read_text(encoding="utf-8"))
+        llm = RecoveringRoutingLLM()
+        runtime = ZhugeAgentRuntime(llm_client=llm, case_data=case_data)
+
+        result = runtime.answer(case_data["request"])
+
+        self.assertEqual(result.agent_id, "dcs_query_agent")
+        self.assertEqual(result.skill_id, "query_tag_value")
+        self.assertTrue(result.verification["passed"])
+        self.assertGreaterEqual(llm.route_calls, 2)
+
+    def test_invalid_auto_plan_retries_before_dispatch(self) -> None:
+        """验证 auto 规划非法 agent_id 会先重试，修正后再进入合法子智能体链路。"""
+        case_data = json.loads(QUERY_CASE_PATH.read_text(encoding="utf-8"))
+        llm = RecoveringRoutingLLM()
+        runtime = ZhugeAgentRuntime(llm_client=llm, case_data=case_data)
+
+        result = runtime.answer_auto(case_data["request"])
+
+        self.assertIsInstance(result, StructuredAnswer)
+        self.assertEqual(result.agent_id, "dcs_query_agent")
+        self.assertEqual(result.skill_id, "query_tag_value")
+        self.assertGreaterEqual(llm.route_calls, 4)
 
     def test_structured_run_request_passes_backend_context(self) -> None:
         """验证后端结构化请求可以携带用户、租户、角色和数据域上下文进入执行链。"""
